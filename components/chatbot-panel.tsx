@@ -1,0 +1,2110 @@
+"use client";
+
+/**
+ * ChatbotPanel component - Provides chatbot UI in protected pages
+ */
+
+import { useState, useRef, useEffect } from "react";
+import Image from "next/image";
+import { flushSync } from "react-dom";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { MessageCircle, X, Send, Loader2, Plus, ChevronDown, ChevronUp, Wrench, Trash2, Paperclip, File, FolderOpen, AlertTriangle } from "lucide-react";
+import type { ChatMessage, ChatResponse, ToolInvocation, ChatSession } from "@/types/chat";
+
+interface ChatbotPanelProps {
+  className?: string;
+  /**
+   * When true, renders a full-page chat experience instead of a floating widget.
+   */
+  fullPage?: boolean;
+}
+
+type AvailableTool = {
+  name: string;
+  description: string;
+  parameters: {
+    name: string;
+    type: string;
+    description?: string;
+    required: boolean;
+  }[];
+};
+
+/**
+ * Decode Unicode escape sequences in a string
+ * Converts \u0041 to A, etc.
+ */
+function decodeUnicode(str: string): string {
+  try {
+    // First try to decode if it's a JSON string with Unicode escapes
+    if (str.includes("\\u")) {
+      // Replace Unicode escape sequences
+      return str.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => {
+        return String.fromCharCode(parseInt(hex, 16));
+      });
+    }
+    return str;
+  } catch {
+    return str;
+  }
+}
+
+/**
+ * Normalize message content (string or vision payload) into displayable text
+ */
+function normalizeMessageContent(
+  content: ChatMessage["content"]
+): string {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  return content
+    .map((item) => {
+      if (item.type === "text") return item.text;
+      return "[image]";
+    })
+    .join("\n");
+}
+
+/**
+ * Convert URLs and Markdown links in text to clickable links
+ * Handles both Markdown format [text](url) and plain URLs
+ */
+function renderLinks(content: ChatMessage["content"]): React.ReactNode {
+  const text = normalizeMessageContent(content);
+  // First, handle Markdown links: [text](url)
+  const markdownLinkRegex = /\[([^\]]+)\]\(([^)]+)\)/g;
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let key = 0;
+  let match;
+
+  // Process Markdown links first
+  while ((match = markdownLinkRegex.exec(text)) !== null) {
+    // Add text before the match
+    if (match.index > lastIndex) {
+      const beforeText = text.substring(lastIndex, match.index);
+      parts.push(...renderPlainUrls(beforeText, key));
+      key += beforeText.length;
+    }
+
+    // Add the clickable link
+    const linkText = match[1];
+    const linkUrl = match[2];
+    parts.push(
+      <a
+        key={`link-${key++}`}
+        href={linkUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-primary hover:text-primary/80 underline underline-offset-2 transition-colors"
+      >
+        {linkText}
+      </a>
+    );
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  // Add remaining text (which may contain plain URLs)
+  if (lastIndex < text.length) {
+    const remainingText = text.substring(lastIndex);
+    parts.push(...renderPlainUrls(remainingText, key));
+  }
+
+  return parts.length > 0 ? <>{parts}</> : text;
+}
+
+/**
+ * Convert plain URLs in text to clickable links
+ */
+function renderPlainUrls(text: string, startKey: number = 0): React.ReactNode[] {
+  // URL regex: matches http://, https://, or www. URLs
+  const urlRegex = /(https?:\/\/[^\s]+|www\.[^\s]+)/gi;
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let key = startKey;
+  let match;
+
+  while ((match = urlRegex.exec(text)) !== null) {
+    // Add text before the URL
+    if (match.index > lastIndex) {
+      parts.push(
+        <span key={key++}>{text.substring(lastIndex, match.index)}</span>
+      );
+    }
+
+    // Add the clickable URL
+    let url = match[0];
+    // Add https:// if it's a www. URL
+    if (url.startsWith("www.")) {
+      url = "https://" + url;
+    }
+    parts.push(
+      <a
+        key={`url-${key++}`}
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-primary hover:text-primary/80 underline underline-offset-2 transition-colors break-all"
+      >
+        {match[0]}
+      </a>
+    );
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  // Add remaining text
+  if (lastIndex < text.length) {
+    parts.push(<span key={key++}>{text.substring(lastIndex)}</span>);
+  }
+
+  return parts.length > 0 ? parts : [<span key={startKey}>{text}</span>];
+}
+
+/**
+ * Highlight keywords in text
+ * Highlights common important keywords like: number, memory, evaluationPreviousGoal, nextGoal, url, actions, etc.
+ */
+function highlightKeywords(text: string): React.ReactNode {
+  const keywords = [
+    "number",
+    "memory",
+    "evaluationPreviousGoal",
+    "nextGoal",
+    "url",
+    "screenshotUrl",
+    "actions",
+    "STEP",
+    "Verdict",
+    "Success",
+    "Failure",
+    "Error",
+    "timeout",
+    "done",
+    "text",
+    "success",
+  ];
+
+  // Split text by keywords while preserving the keywords
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let key = 0;
+
+  // Create a regex pattern that matches any keyword (case-insensitive)
+  // Match keywords that are JSON keys (followed by ":") or standalone words
+  const escapedKeywords = keywords.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const pattern = new RegExp(
+    `("(${escapedKeywords.join("|")})"\\s*:)|(\\b(${escapedKeywords.join("|")})\\b)`,
+    "gi"
+  );
+
+  let match;
+  while ((match = pattern.exec(text)) !== null) {
+    // Add text before the match
+    if (match.index > lastIndex) {
+      parts.push(
+        <span key={key++}>{text.substring(lastIndex, match.index)}</span>
+      );
+    }
+
+    // Add the highlighted keyword
+    parts.push(
+      <span key={key++} className="font-semibold text-primary">
+        {match[0]}
+      </span>
+    );
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  // Add remaining text
+  if (lastIndex < text.length) {
+    parts.push(<span key={key++}>{text.substring(lastIndex)}</span>);
+  }
+
+  return parts.length > 0 ? <>{parts}</> : text;
+}
+
+/**
+ * Format and display step content with Unicode decoding and keyword highlighting
+ */
+function formatStepContent(step: unknown): React.ReactNode {
+  let content: string;
+  
+  if (typeof step === "string") {
+    content = step;
+  } else {
+    content = JSON.stringify(step, null, 2);
+  }
+
+  // Decode Unicode escape sequences
+  const decoded = decodeUnicode(content);
+  
+  // Highlight keywords
+  return highlightKeywords(decoded);
+}
+
+/**
+ * Tool Calls Display Component - Shows tool invocation details
+ * Supports streaming display for Browser Use tasks
+ */
+function ToolCallsDisplay({ toolCalls, isFullPage = false }: { toolCalls: ToolInvocation[]; isFullPage?: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  
+  // Check if any tool call is a Browser Use task
+  const browserUseCalls = toolCalls.filter(
+    (tc) => tc.name === "browser_use_task" && tc.arguments?.task
+  );
+
+  if (isFullPage) {
+    return (
+      <div className="mt-3 space-y-2 border-t border-border pt-3">
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="flex w-full items-center justify-between rounded-lg border bg-card px-3 py-2 transition-colors hover:bg-accent"
+        >
+          <div className="flex items-center gap-2">
+            <Wrench className="h-3.5 w-3.5 text-primary" />
+            <span className="text-xs text-muted-foreground">
+              Tools Invoked: {toolCalls.length}
+            </span>
+          </div>
+          {expanded ? (
+            <ChevronUp className="h-3.5 w-3.5 text-muted-foreground" />
+          ) : (
+            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+          )}
+        </button>
+
+        {expanded && (
+          <div className="space-y-3">
+            {toolCalls.map((toolCall, idx) => {
+              // Regular tool call display (Browser Use steps are handled via toolCall.step)
+              return (
+                <Card key={toolCall.id || idx}>
+                  <CardContent className="pt-4 space-y-2">
+                  {/* Tool Name */}
+                  <div className="flex items-center gap-2">
+                      <span className="text-xs font-mono text-primary">
+                      {toolCall.name}
+                    </span>
+                    {toolCall.error && (
+                        <span className="ml-auto text-xs text-destructive">
+                          Error
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Tool Arguments */}
+                    <div className="rounded border bg-muted/50 p-2">
+                      <div className="mb-1 text-xs text-muted-foreground">
+                        Parameters:
+                    </div>
+                      <pre className="text-xs font-mono overflow-x-auto">
+                      {JSON.stringify(toolCall.arguments, null, 2)}
+                    </pre>
+                  </div>
+
+                  {/* Streaming Steps History (for Browser Use tasks) */}
+                  {toolCall.steps && toolCall.steps.length > 0 && toolCall.result === undefined && !toolCall.error && (
+                      <div className="rounded border bg-muted/50 p-2">
+                        <div className="mb-2 text-xs text-muted-foreground">
+                          Steps ({toolCall.steps.length}):
+                      </div>
+                      <div className="space-y-2 max-h-60 overflow-y-auto">
+                        {toolCall.steps.map((step, stepIdx) => (
+                          <div
+                            key={stepIdx}
+                              className="rounded border bg-background/50 p-2"
+                          >
+                              <div className="mb-1 text-xs text-muted-foreground">
+                                Step {stepIdx + 1}:
+                            </div>
+                              <pre className="text-xs font-mono overflow-x-auto whitespace-pre-wrap break-words">
+                              {formatStepContent(step)}
+                            </pre>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {/* Fallback: Show single step if steps array is not available */}
+                  {(!toolCall.steps || toolCall.steps.length === 0) && toolCall.step !== undefined && toolCall.result === undefined && !toolCall.error && (
+                      <div className="rounded border bg-muted/50 p-2">
+                        <div className="mb-1 text-xs text-muted-foreground">
+                          Step:
+                      </div>
+                        <pre className="text-xs font-mono overflow-x-auto max-h-40 overflow-y-auto">
+                        {formatStepContent(toolCall.step)}
+                      </pre>
+                    </div>
+                  )}
+
+                  {/* Tool Result or Error */}
+                  {toolCall.error ? (
+                      <div className="rounded border border-destructive/50 bg-destructive/10 p-2">
+                        <div className="mb-1 text-xs text-destructive">
+                          Error:
+                      </div>
+                        <div className="text-xs font-mono text-destructive">{toolCall.error}</div>
+                    </div>
+                  ) : toolCall.result !== undefined && toolCall.result !== null ? (
+                      <div className="rounded border bg-muted/50 p-2">
+                        <div className="mb-1 text-xs text-muted-foreground">
+                          Result:
+                      </div>
+                        <pre className="text-xs font-mono overflow-x-auto">
+                        {formatStepContent(toolCall.result)}
+                      </pre>
+                    </div>
+                  ) : toolCall.result === null ? (
+                      <div className="rounded border border-yellow-500/50 bg-yellow-500/10 p-2">
+                        <div className="mb-1 text-xs text-yellow-600 dark:text-yellow-400">
+                          Result:
+                      </div>
+                        <div className="text-xs font-mono italic text-yellow-700 dark:text-yellow-300">null (No result returned)</div>
+                    </div>
+                  ) : null}
+
+                  {/* Invocation Time */}
+                  {toolCall.invokedAt && (
+                    <div className="text-right">
+                        <span className="text-xs text-muted-foreground">
+                        {new Date(toolCall.invokedAt).toLocaleTimeString()}
+                      </span>
+                    </div>
+                  )}
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Compact mode for floating widget
+  return (
+    <div className="mt-2 space-y-2 border-t border-border pt-2">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex w-full items-center justify-between text-xs text-muted-foreground hover:text-foreground transition-colors"
+      >
+        <span>Used {toolCalls.length} tool(s)</span>
+        {expanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+      </button>
+
+      {expanded && (
+        <div className="space-y-2 text-xs">
+          {toolCalls.map((toolCall, idx) => {
+            // Regular tool call display (Browser Use steps are handled via toolCall.step)
+            return (
+              <div key={toolCall.id || idx} className="rounded border bg-muted/50 p-2 space-y-1">
+                <div className="font-semibold text-primary">{toolCall.name}</div>
+                <div>
+                  <div className="text-muted-foreground">Parameters:</div>
+                  <pre className="text-[10px] overflow-x-auto">
+                    {JSON.stringify(toolCall.arguments, null, 2)}
+                  </pre>
+                </div>
+                {/* Streaming Steps History (for Browser Use tasks) */}
+                {toolCall.steps && toolCall.steps.length > 0 && toolCall.result === undefined && !toolCall.error && (
+                  <div>
+                    <div className="text-muted-foreground">Steps ({toolCall.steps.length}):</div>
+                    <div className="space-y-1 max-h-48 overflow-y-auto">
+                      {toolCall.steps.map((step, stepIdx) => (
+                        <div key={stepIdx} className="rounded border bg-background/50 p-1.5">
+                          <div className="text-[9px] text-muted-foreground mb-0.5">
+                            Step {stepIdx + 1}:
+                          </div>
+                          <pre className="text-[10px] overflow-x-auto whitespace-pre-wrap break-words">
+                            {formatStepContent(step)}
+                          </pre>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {/* Fallback: Show single step if steps array is not available */}
+                {(!toolCall.steps || toolCall.steps.length === 0) && toolCall.step !== undefined && toolCall.result === undefined && !toolCall.error && (
+                  <div>
+                    <div className="text-muted-foreground">Step:</div>
+                    <pre className="text-[10px] overflow-x-auto max-h-32 overflow-y-auto">
+                      {formatStepContent(toolCall.step)}
+                    </pre>
+                  </div>
+                )}
+                {toolCall.error ? (
+                  <div className="text-destructive">
+                    <div className="text-muted-foreground">Error:</div>
+                    <div>{toolCall.error}</div>
+                  </div>
+                ) : toolCall.result !== undefined && toolCall.result !== null ? (
+                  <div>
+                    <div className="text-muted-foreground">Result:</div>
+                    <pre className="text-[10px] overflow-x-auto">
+                      {formatStepContent(toolCall.result)}
+                    </pre>
+                  </div>
+                ) : toolCall.result === null ? (
+                  <div>
+                    <div className="text-muted-foreground">Result:</div>
+                    <div className="text-[10px] text-yellow-600 dark:text-yellow-400 italic">null (No result returned)</div>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function ChatbotPanel({ className, fullPage = false }: ChatbotPanelProps) {
+  const [isOpen, setIsOpen] = useState(fullPage);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string | undefined>();
+  const [acontextDiskId, setAcontextDiskId] = useState<string | undefined>();
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [isSessionsLoading, setIsSessionsLoading] = useState(false);
+  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
+  const [availableTools, setAvailableTools] = useState<AvailableTool[]>([]);
+  const [toolsError, setToolsError] = useState<string | null>(null);
+  const [isToolsModalOpen, setIsToolsModalOpen] = useState(false);
+  const [isFilesModalOpen, setIsFilesModalOpen] = useState(false);
+  const [files, setFiles] = useState<Array<{
+    id?: string;
+    path?: string;
+    filename?: string;
+    mimeType?: string;
+    size?: number;
+    createdAt?: string;
+  }>>([]);
+  const [isFilesLoading, setIsFilesLoading] = useState(false);
+  const [filesError, setFilesError] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<Array<{
+    filename: string;
+    content: string; // base64
+    mimeType: string;
+  }>>([]);
+  const [tokenCounts, setTokenCounts] = useState<{ total_tokens: number } | null>(null);
+  const [isCompressing, setIsCompressing] = useState(false);
+  const [pingLoading, setPingLoading] = useState(false);
+  const [pingResponse, setPingResponse] = useState<string | null>(null);
+  
+  const handlePing = async () => {
+    setPingLoading(true);
+    setPingResponse(null);
+    try {
+      const res = await fetch("/api/acontext/healthcheck", {
+        method: "GET",
+        cache: "no-store",
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        setPingResponse("pong");
+      } else {
+        setPingResponse("error");
+      }
+    } catch {
+      setPingResponse("error");
+    } finally {
+      setPingLoading(false);
+    }
+  };
+  
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  // Typewriter effect refs
+  const typewriterBufferRef = useRef<Map<string, string>>(new Map()); // messageId -> buffered content
+  const typewriterDisplayRef = useRef<Map<string, string>>(new Map()); // messageId -> displayed content
+  const typewriterTimerRef = useRef<Map<string, ReturnType<typeof setInterval>>>(
+    new Map()
+  ); // messageId -> timer
+  const totalTools = availableTools.length;
+  const enabledToolNames = availableTools.map((tool) => tool.name);
+  const TOKEN_LIMIT_THRESHOLD = 80000;
+  const TOKEN_WARNING_THRESHOLD = 70000;
+  const tokenUsage = tokenCounts?.total_tokens ?? null;
+  const isTokenWarning =
+    tokenUsage !== null && tokenUsage >= TOKEN_WARNING_THRESHOLD;
+  const isTokenCritical =
+    tokenUsage !== null && tokenUsage >= TOKEN_LIMIT_THRESHOLD;
+
+  // Auto-scroll to bottom when new messages arrive
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  // Cleanup typewriter timers on unmount
+  useEffect(() => {
+    return () => {
+      typewriterTimerRef.current.forEach((timer) => clearInterval(timer));
+      typewriterTimerRef.current.clear();
+      typewriterBufferRef.current.clear();
+      typewriterDisplayRef.current.clear();
+    };
+  }, []);
+
+  // Typewriter effect: gradually display buffered content
+  const startTypewriter = (messageId: string, targetContent: string) => {
+    // Clear existing timer for this message
+    const existingTimer = typewriterTimerRef.current.get(messageId);
+    if (existingTimer) {
+      clearInterval(existingTimer);
+    }
+
+    // Get current displayed content
+    const currentDisplay = typewriterDisplayRef.current.get(messageId) || "";
+    
+    // If target is shorter than current, just update immediately
+    if (targetContent.length <= currentDisplay.length) {
+      typewriterDisplayRef.current.set(messageId, targetContent);
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === messageId ? { ...msg, content: targetContent } : msg
+        )
+      );
+      return;
+    }
+
+    // Calculate how much new content to display
+    const newContent = targetContent.slice(currentDisplay.length);
+    
+    // Typewriter settings: characters per interval, interval in ms
+    // Adjust these values to control speed:
+    // - Higher CHARS_PER_INTERVAL = faster display
+    // - Lower INTERVAL_MS = smoother but more frequent updates
+    // Current: ~60 chars/second (user-friendly speed)
+    const CHARS_PER_INTERVAL = 2; // Display 2 characters at a time
+    const INTERVAL_MS = 30; // Update every 30ms (~33 updates/second)
+    
+    let displayIndex = 0;
+    
+    const timer = setInterval(() => {
+      displayIndex += CHARS_PER_INTERVAL;
+      const newDisplay = currentDisplay + newContent.slice(0, displayIndex);
+      
+      // Update displayed content
+      typewriterDisplayRef.current.set(messageId, newDisplay);
+      
+      // Update UI
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === messageId ? { ...msg, content: newDisplay } : msg
+        )
+      );
+
+      // If we've displayed all new content, clear the timer
+      if (displayIndex >= newContent.length) {
+        clearInterval(timer);
+        typewriterTimerRef.current.delete(messageId);
+        // Ensure final content is exactly targetContent
+        typewriterDisplayRef.current.set(messageId, targetContent);
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === messageId ? { ...msg, content: targetContent } : msg
+          )
+        );
+      }
+    }, INTERVAL_MS);
+
+    typewriterTimerRef.current.set(messageId, timer);
+  };
+
+  // Fetch chat sessions (for full-page layout)
+  useEffect(() => {
+    if (!fullPage) return;
+
+    async function fetchSessions() {
+      try {
+        setIsSessionsLoading(true);
+        const res = await fetch("/api/chat-sessions");
+        if (!res.ok) {
+          throw new Error("Failed to load sessions");
+        }
+        const data = await res.json();
+        setSessions(data.sessions ?? []);
+      } catch (err) {
+        console.error("Failed to load chat sessions", err);
+      } finally {
+        setIsSessionsLoading(false);
+      }
+    }
+
+    fetchSessions();
+  }, [fullPage]);
+
+  // Fetch available tools for display
+  useEffect(() => {
+    async function fetchTools() {
+      try {
+        const res = await fetch("/api/tools");
+        if (!res.ok) {
+          throw new Error("Failed to load tools");
+        }
+        const data = await res.json();
+        const tools: AvailableTool[] = data.tools ?? [];
+        setAvailableTools(tools);
+        setToolsError(null);
+      } catch (err) {
+        setToolsError(
+          err instanceof Error ? err.message : "Failed to load tools"
+        );
+      }
+    }
+
+    fetchTools();
+  }, []);
+
+  const handleLoadSessionMessages = async (targetSessionId: string) => {
+    // Guard: block invalid session id on the client to avoid /api/chat-sessions/undefined/messages
+    if (!targetSessionId) {
+      setError("Failed to load messages: invalid session id");
+      return;
+    }
+
+    try {
+      setIsLoading(true);
+      setError(null);
+      const res = await fetch(`/api/chat-sessions/${targetSessionId}/messages`);
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.message || "Failed to load messages");
+      }
+      const data = await res.json();
+      setMessages(data.messages ?? []);
+      setTokenCounts(data.tokenCounts ?? null);
+      setSessionId(targetSessionId);
+      
+      // Extract acontextDiskId from the sessions list
+      const session = sessions.find((s) => s.id === targetSessionId);
+      if (session?.acontextDiskId) {
+        setAcontextDiskId(session.acontextDiskId);
+      } else {
+        // Clear diskId if session doesn't have one
+        setAcontextDiskId(undefined);
+      }
+    } catch (err) {
+      const errorMessage =
+        err instanceof Error ? err.message : "Failed to load session messages";
+      setError(errorMessage);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleNewSession = () => {
+    // Reset local state so that next send will create a brand-new session on the server
+    setMessages([]);
+    setSessionId(undefined);
+    setAcontextDiskId(undefined);
+    setTokenCounts(null);
+    setError(null);
+    setInput("");
+  };
+
+  const handleDeleteSession = async (targetSessionId: string) => {
+    if (!targetSessionId || deletingSessionId) return;
+
+    const confirmed = window.confirm("Are you sure you want to delete this session? This action cannot be undone.");
+    if (!confirmed) return;
+
+    try {
+      setDeletingSessionId(targetSessionId);
+      setError(null);
+
+      const res = await fetch(`/api/chat-sessions/${targetSessionId}`, {
+        method: "DELETE",
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.message || "Failed to delete session");
+      }
+
+      // Remove from local list
+      setSessions((prev) => prev.filter((s) => s.id !== targetSessionId));
+
+      // If we deleted the active session, reset the chat view
+      if (sessionId === targetSessionId) {
+        setSessionId(undefined);
+        setAcontextDiskId(undefined);
+        setMessages([]);
+        setTokenCounts(null);
+        setInput("");
+      }
+    } catch (err) {
+      const errorMessage =
+        err instanceof Error ? err.message : "Failed to delete session";
+      setError(errorMessage);
+    } finally {
+      setDeletingSessionId(null);
+    }
+  };
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    const newAttachments: Array<{
+      filename: string;
+      content: string;
+      mimeType: string;
+    }> = [];
+
+    for (const file of Array.from(files)) {
+      try {
+        const base64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = reader.result as string;
+            // Remove data URL prefix (e.g., "data:image/png;base64,")
+            const base64Content = result.includes(",")
+              ? result.split(",")[1]
+              : result;
+            resolve(base64Content);
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+
+        newAttachments.push({
+          filename: file.name,
+          content: base64,
+          mimeType: file.type || "application/octet-stream",
+        });
+      } catch (error) {
+        console.error("Failed to read file:", error);
+        setError(`Failed to read file: ${file.name}`);
+      }
+    }
+
+    setAttachments((prev) => [...prev, ...newAttachments]);
+    
+    // Reset file input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  };
+
+  const handleRemoveAttachment = (index: number) => {
+    setAttachments((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleLoadFiles = async () => {
+    try {
+      setIsFilesLoading(true);
+      setFilesError(null);
+      // Build URL with diskId query parameter if available
+      const url = acontextDiskId
+        ? `/api/acontext/artifacts?diskId=${encodeURIComponent(acontextDiskId)}`
+        : "/api/acontext/artifacts";
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new Error("Failed to load files");
+      }
+      const data = await res.json();
+      setFiles(data.artifacts || []);
+    } catch (err) {
+      setFilesError(
+        err instanceof Error ? err.message : "Failed to load files"
+      );
+      setFiles([]);
+    } finally {
+      setIsFilesLoading(false);
+    }
+  };
+
+  const handleOpenFilesModal = () => {
+    setIsFilesModalOpen(true);
+    if (files.length === 0) {
+      handleLoadFiles();
+    }
+  };
+
+  const handleManualCompress = async () => {
+      if (!sessionId) {
+      setError("An existing session is required to compress context");
+      return;
+    }
+
+    try {
+      setIsCompressing(true);
+      setError(null);
+      const res = await fetch(`/api/chat-sessions/${sessionId}/compress`, {
+        method: "POST",
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        const message = errorData.message || "Failed to compress context";
+        throw new Error(message);
+      }
+
+      const data = await res.json();
+
+      // Clear any running typewriter timers to avoid stale updates
+      typewriterTimerRef.current.forEach((timer) => clearInterval(timer));
+      typewriterTimerRef.current.clear();
+      typewriterBufferRef.current.clear();
+      typewriterDisplayRef.current.clear();
+
+      setMessages(data.messages ?? []);
+      setTokenCounts(data.tokenCounts ?? null);
+    } catch (err) {
+      const errorMessage =
+        err instanceof Error ? err.message : "Failed to compress context";
+      setError(errorMessage);
+    } finally {
+      setIsCompressing(false);
+    }
+  };
+
+  const handleSend = async () => {
+    if ((!input.trim() && attachments.length === 0) || isLoading) return;
+
+    const userMessage: ChatMessage = {
+      role: "user",
+      content: input.trim() || "[Attachment]",
+    };
+
+    // Add user message to UI immediately
+    setMessages((prev) => [...prev, userMessage]);
+    const messageContent = input.trim();
+    setInput("");
+    const currentAttachments = [...attachments];
+    setAttachments([]);
+    setError(null);
+    setIsLoading(true);
+
+    try {
+      const enabledToolsForRequest =
+        availableTools.length > 0 ? enabledToolNames : undefined;
+
+      const response = await fetch("/api/chatbot", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message: messageContent || "[Attachment]",
+          sessionId,
+          messages: messages.map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+          enabledToolNames: enabledToolsForRequest,
+          stream: true, // Enable streaming for Browser Use tasks
+          attachments: currentAttachments.length > 0 ? currentAttachments : undefined,
+        }),
+      });
+
+      if (!response.ok) {
+        // Try to parse error as JSON, fallback to text
+        let errorMessage = "Failed to get response";
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.message || errorMessage;
+        } catch {
+          errorMessage = await response.text().catch(() => errorMessage);
+        }
+        throw new Error(errorMessage);
+      }
+
+      // Check if response is streaming (SSE)
+      const contentType = response.headers.get("content-type");
+      const isStreaming = contentType?.includes("text/event-stream");
+
+      if (isStreaming) {
+        // Handle streaming response
+        const reader = response.body?.getReader();
+        if (!reader) {
+          throw new Error("No response body");
+        }
+
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let currentToolCalls: ToolInvocation[] = [];
+        let finalMessage = "";
+        let finalSessionId = sessionId;
+
+        // Create a placeholder assistant message that will be updated
+        const assistantMessageId = `assistant-${Date.now()}`;
+        const assistantMessage: ChatMessage = {
+          id: assistantMessageId,
+          role: "assistant",
+          content: "",
+          toolCalls: [],
+        };
+
+        // Initialize typewriter buffers for this message
+        typewriterBufferRef.current.set(assistantMessageId, "");
+        typewriterDisplayRef.current.set(assistantMessageId, "");
+
+        setMessages((prev) => [...prev, assistantMessage]);
+        // Set loading to false once assistant message is added to avoid duplicate display
+        setIsLoading(false);
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          let eventType = "message";
+          let data = "";
+
+          for (const line of lines) {
+            if (line.startsWith("event:")) {
+              eventType = line.slice(6).trim();
+            } else if (line.startsWith("data:")) {
+              data = line.slice(5).trim();
+            } else if (line === "") {
+              // Empty line indicates end of event
+              if (data) {
+                try {
+                  const parsed = JSON.parse(data);
+
+                  if (eventType === "message") {
+                    // Stream message content chunks - buffer for typewriter effect
+                    const content = parsed.content || "";
+                    if (content) {
+                      // Add to buffer
+                      const currentBuffer = typewriterBufferRef.current.get(assistantMessageId) || "";
+                      const newBuffer = currentBuffer + content;
+                      typewriterBufferRef.current.set(assistantMessageId, newBuffer);
+                      
+                      // Start or update typewriter effect
+                      startTypewriter(assistantMessageId, newBuffer);
+                    }
+                  } else if (eventType === "tool_call_start") {
+                    const toolCall = parsed.toolCall as ToolInvocation;
+                    currentToolCalls.push(toolCall);
+                    // Update assistant message with tool calls
+                    setMessages((prev) =>
+                      prev.map((msg) =>
+                        msg.id === assistantMessageId
+                          ? { ...msg, toolCalls: [...currentToolCalls] }
+                          : msg
+                      )
+                    );
+                  } else if (eventType === "tool_call_step") {
+                    // Update the specific tool call with step information
+                    // Accumulate steps in an array to preserve history
+                    const { toolCallId, step } = parsed;
+                    setMessages((prev) =>
+                      prev.map((msg) =>
+                        msg.id === assistantMessageId
+                          ? {
+                              ...msg,
+                              toolCalls: msg.toolCalls?.map((tc) =>
+                                tc.id === toolCallId
+                                  ? {
+                                      ...tc,
+                                      step, // Keep current step for backward compatibility
+                                      steps: [...(tc.steps || []), step], // Accumulate all steps
+                                    }
+                                  : tc
+                              ),
+                            }
+                          : msg
+                      )
+                    );
+                  } else if (eventType === "tool_call_complete") {
+                    const toolCall = parsed.toolCall as ToolInvocation;
+                    // Update the tool call in the list
+                    setMessages((prev) =>
+                      prev.map((msg) =>
+                        msg.id === assistantMessageId
+                          ? {
+                              ...msg,
+                              toolCalls: msg.toolCalls?.map((tc) =>
+                                tc.id === toolCall.id ? toolCall : tc
+                              ),
+                            }
+                          : msg
+                      )
+                    );
+                  } else if (eventType === "tool_call_error") {
+                    const toolCall = parsed.toolCall as ToolInvocation;
+                    // Update the tool call with error
+                    setMessages((prev) =>
+                      prev.map((msg) =>
+                        msg.id === assistantMessageId
+                          ? {
+                              ...msg,
+                              toolCalls: msg.toolCalls?.map((tc) =>
+                                tc.id === toolCall.id ? toolCall : tc
+                              ),
+                            }
+                          : msg
+                      )
+                    );
+                  } else if (eventType === "final_message") {
+                    finalMessage = parsed.message || "";
+                    finalSessionId = parsed.sessionId || sessionId;
+                    // Store acontextDiskId if provided
+                    if (parsed.acontextDiskId) {
+                      setAcontextDiskId(parsed.acontextDiskId);
+                    }
+                    // Update token counts if provided
+                    if (parsed.tokenCounts) {
+                      setTokenCounts(parsed.tokenCounts);
+                    }
+                    // Update buffer with final message and ensure it's fully displayed
+                    typewriterBufferRef.current.set(assistantMessageId, finalMessage);
+                    // Start typewriter to display final message (or complete if already displayed)
+                    startTypewriter(assistantMessageId, finalMessage);
+                    // Also update tool calls immediately
+                    setMessages((prev) =>
+                      prev.map((msg) =>
+                        msg.id === assistantMessageId
+                          ? {
+                              ...msg,
+                              toolCalls: parsed.toolCalls || msg.toolCalls,
+                            }
+                          : msg
+                      )
+                    );
+                  } else if (eventType === "error") {
+                    throw new Error(parsed.error || "Stream error");
+                  }
+                } catch (e) {
+                  console.error("Failed to parse SSE data:", e);
+                }
+              }
+              eventType = "message";
+              data = "";
+            }
+          }
+        }
+
+        // Set session ID if this is the first message
+        if (!sessionId && finalSessionId) {
+          setSessionId(finalSessionId);
+
+          // Refresh sessions list so that the new session appears in the sidebar
+          if (fullPage) {
+            (async () => {
+              try {
+                const res = await fetch("/api/chat-sessions");
+                if (!res.ok) return;
+                const data = await res.json();
+                const refreshedSessions = data.sessions ?? [];
+                setSessions(refreshedSessions);
+                
+                // Update acontextDiskId from refreshed session if available
+                const refreshedSession = refreshedSessions.find((s: ChatSession) => s.id === finalSessionId);
+                if (refreshedSession?.acontextDiskId) {
+                  setAcontextDiskId(refreshedSession.acontextDiskId);
+                }
+              } catch (err) {
+                console.error("Failed to refresh sessions", err);
+              }
+            })();
+          }
+        }
+      } else {
+        // Handle non-streaming response (fallback)
+        const data: ChatResponse = await response.json();
+
+        // Set session ID if this is the first message
+        if (!sessionId && data.sessionId) {
+          setSessionId(data.sessionId);
+        }
+        
+        // Store acontextDiskId if provided
+        if (data.acontextDiskId) {
+          setAcontextDiskId(data.acontextDiskId);
+        }
+        // Update token counts if provided
+        if (data.tokenCounts) {
+          setTokenCounts(data.tokenCounts);
+        }
+
+          // Refresh sessions list so that the new session appears in the sidebar
+          if (fullPage) {
+            (async () => {
+              try {
+                const res = await fetch("/api/chat-sessions");
+                if (!res.ok) return;
+              const sessionData = await res.json();
+              const refreshedSessions = sessionData.sessions ?? [];
+              setSessions(refreshedSessions);
+              
+              // Update acontextDiskId from refreshed session if available
+              if (data.sessionId) {
+                const refreshedSession = refreshedSessions.find((s: ChatSession) => s.id === data.sessionId);
+                if (refreshedSession?.acontextDiskId) {
+                  setAcontextDiskId(refreshedSession.acontextDiskId);
+                }
+              }
+              } catch (err) {
+                console.error("Failed to refresh sessions", err);
+              }
+            })();
+        }
+
+        // Add assistant response
+        const assistantMessage: ChatMessage = {
+          role: "assistant",
+          content: data.message,
+          toolCalls: data.toolCalls,
+        };
+
+        setMessages((prev) => [...prev, assistantMessage]);
+      }
+    } catch (err) {
+      const errorMessage =
+        err instanceof Error ? err.message : "An error occurred";
+      setError(errorMessage);
+
+      // Remove the user message on error so user can retry
+      setMessages((prev) => prev.slice(0, -1));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  };
+
+  // Floating widget mode (used on generic pages)
+  if (!fullPage) {
+    if (!isOpen) {
+      return (
+        <div className={className}>
+          <Button
+            onClick={() => setIsOpen(true)}
+            className="fixed bottom-4 right-4 h-14 w-14 rounded-full shadow-lg sm:bottom-6 sm:right-6"
+            size="icon"
+          >
+            <MessageCircle className="h-6 w-6" />
+          </Button>
+        </div>
+      );
+    }
+
+    return (
+      <div className={className}>
+        <Card className="fixed bottom-4 left-1/2 z-50 flex h-[70vh] w-full max-w-md -translate-x-1/2 flex-col shadow-xl sm:bottom-6 sm:right-6 sm:left-auto sm:translate-x-0 sm:h-[600px] sm:w-96">
+          <CardHeader className="flex flex-row items-center justify-between pb-3">
+            <CardTitle>Chatbot</CardTitle>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setIsOpen(false)}
+              className="h-8 w-8"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </CardHeader>
+          <CardContent className="flex-1 flex flex-col gap-4 overflow-hidden p-4">
+            <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+              <div
+                className={`rounded-full border px-2.5 py-1 text-xs ${
+                  tokenUsage === null
+                    ? "border-border text-muted-foreground"
+                    : isTokenCritical
+                    ? "border-destructive bg-destructive/10 text-destructive"
+                    : isTokenWarning
+                    ? "border-yellow-500/60 bg-yellow-500/10 text-yellow-600 dark:text-yellow-400"
+                    : "border-primary/60 bg-primary/10 text-primary"
+                }`}
+              >
+                {tokenUsage === null
+                  ? "Tokens pending"
+                  : `${tokenUsage.toLocaleString()} tokens`}
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleManualCompress}
+                disabled={!sessionId || isCompressing}
+                className="h-8 px-3 text-xs"
+              >
+                {isCompressing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Compress"}
+              </Button>
+            </div>
+            {isTokenWarning && (
+              <div className={`flex items-center gap-1 text-xs ${
+                isTokenCritical ? "text-destructive" : "text-yellow-600 dark:text-yellow-400"
+              }`}>
+                <AlertTriangle className="h-3.5 w-3.5" />
+                <span>Context approaching limit, consider compressing</span>
+              </div>
+            )}
+            {/* Messages area */}
+            <div className="flex-1 overflow-y-auto space-y-4 pr-2">
+              {messages.length === 0 && (
+                <div className="text-center text-muted-foreground text-sm py-8">
+                  Start a conversation by sending a message below.
+                </div>
+              )}
+              {messages.map((message, index) => (
+                <div
+                  key={index}
+                  className={`flex ${
+                    message.role === "user" ? "justify-end" : "justify-start"
+                  }`}
+                >
+                  <div
+                    className={`max-w-[80%] rounded-lg px-4 py-2 ${
+                      message.role === "user"
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted"
+                    }`}
+                  >
+                    <p className="text-sm whitespace-pre-wrap">
+                      {renderLinks(message.content)}
+                    </p>
+                    {message.toolCalls && message.toolCalls.length > 0 && (
+                      <ToolCallsDisplay toolCalls={message.toolCalls} isFullPage={false} />
+                    )}
+                  </div>
+                </div>
+              ))}
+              {isLoading && (
+                <div className="flex justify-start">
+                  <div className="bg-muted rounded-lg px-4 py-2">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  </div>
+                </div>
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* Error message */}
+            {error && (
+              <div className="text-sm text-destructive bg-destructive/10 p-2 rounded">
+                {error}
+              </div>
+            )}
+
+            {/* Attachments preview */}
+            {attachments.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-2">
+                {attachments.map((attachment, index) => (
+                  <div
+                    key={index}
+                    className="flex items-center gap-2 rounded-lg border border-primary/50 bg-muted px-3 py-1.5"
+                  >
+                    <File className="h-3 w-3 text-primary" />
+                    <span className="text-xs">
+                      {attachment.filename}
+                    </span>
+                    <button
+                      onClick={() => handleRemoveAttachment(index)}
+                      className="text-primary hover:text-primary/80"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Input area */}
+            <div className="flex gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                onChange={handleFileSelect}
+                className="hidden"
+                accept="*/*"
+              />
+              <Button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                size="icon"
+                variant="ghost"
+                disabled={isLoading}
+              >
+                <Paperclip className="h-4 w-4" />
+              </Button>
+              <Input
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyPress={handleKeyPress}
+                placeholder="Type your message..."
+                disabled={isLoading}
+                className="flex-1"
+              />
+              <Button
+                onClick={handleSend}
+                disabled={(!input.trim() && attachments.length === 0) || isLoading}
+                size="icon"
+              >
+                {isLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Send className="h-4 w-4" />
+                )}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  // Full-page chat layout (used on /protected) - Futuristic style
+  return (
+    <div
+      className={`relative flex h-full w-full min-h-0 overflow-hidden bg-background text-foreground ${className ?? ""}`}
+    >
+      {/* Left side: session list */}
+      <aside className="relative hidden h-full w-64 flex-col justify-between border-r bg-card px-4 py-3 md:flex">
+        <div className="space-y-4 overflow-y-auto pr-1">
+          <Button
+            className="w-full justify-start gap-2" 
+            variant="outline"
+            type="button"
+            onClick={handleNewSession}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            <span>New Session</span>
+          </Button>
+          <div className="space-y-3">
+            <div className="px-1 text-xs text-muted-foreground">
+              Session History
+            </div>
+            <div className="space-y-1.5">
+              {isSessionsLoading && (
+                <div className="px-1 text-xs text-muted-foreground">
+                  Loading sessions...
+                </div>
+              )}
+              {!isSessionsLoading && sessions.length === 0 && (
+                <div className="px-1 text-xs text-muted-foreground">
+                  No sessions yet. Start a new conversation.
+                </div>
+              )}
+              {sessions.map((s) => {
+                const isActive = s.id === sessionId;
+                const createdAt =
+                  typeof s.createdAt === "string"
+                    ? new Date(s.createdAt)
+                    : s.createdAt;
+                const isDeleting = deletingSessionId === s.id;
+                return (
+                  <div
+                    key={s.id}
+                    className={`group flex w-full items-center gap-2 rounded-lg border-l-2 px-2.5 py-2.5 text-sm transition-colors ${
+                      isActive
+                        ? "border-primary bg-accent"
+                        : "border-border bg-card hover:bg-accent"
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => handleLoadSessionMessages(s.id)}
+                      className="flex-1 text-left"
+                    >
+                      <div className="mb-0.5 line-clamp-2 text-xs font-medium">
+                        {s.title || "Untitled Session"}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {createdAt instanceof Date
+                          ? createdAt.toLocaleString()
+                          : String(createdAt)}
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteSession(s.id);
+                      }}
+                      className="ml-1 inline-flex h-7 w-7 items-center justify-center rounded-md border border-transparent bg-transparent text-muted-foreground opacity-0 transition-all hover:border-destructive hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+                      aria-label="Delete session"
+                    >
+                      {isDeleting ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4 space-y-2 rounded-lg border bg-card px-4 py-4">
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-muted-foreground">Status</span>
+            <span className="inline-flex items-center gap-1.5 rounded-full border bg-primary/10 px-2.5 py-1 text-xs text-primary">
+              <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+              Online
+            </span>
+          </div>
+          <div className="flex items-center justify-between border-t pt-2">
+            <span className="text-xs text-muted-foreground">Session ID</span>
+            <span className="text-xs font-mono text-primary break-all text-right">
+              {sessionId ? sessionId.slice(0, 8) + "..." : "pending..."}
+            </span>
+          </div>
+        </div>
+
+        {/* Tools list removed: replaced by View Tools button + modal */}
+      </aside>
+
+      {/* Right side: main chat area */}
+      <section className="relative z-10 flex min-h-0 flex-1 flex-col items-center px-4 py-2 md:px-8 md:py-3">
+        <div className="flex h-full w-full max-w-8xl flex-1 flex-col gap-3 rounded-lg border bg-card px-3 pb-3 pt-2 sm:gap-4 sm:px-8 sm:pb-6 sm:pt-4 md:px-10 md:pt-5">
+          {/* Top bar */}
+          <div className="flex flex-col gap-2 border-b pb-2 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-3">
+              <div className="inline-flex items-center gap-2 border bg-muted px-3 py-1.5 text-xs text-muted-foreground">
+                <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+                <span>Active Session</span>
+                </div>
+              <h1 className="text-xl font-bold sm:text-2xl">
+                <span className="text-primary">Ready</span>
+                <span className="text-foreground"> for Input</span>
+              </h1>
+            </div>
+
+            {/* Controls - mobile layout */}
+            <div className="flex w-full items-center gap-1 overflow-x-auto pb-1 md:hidden">
+              <div
+                className={`flex items-center rounded-full border px-2 py-1 text-[10px] ${
+                  tokenUsage === null
+                    ? "border-border bg-muted text-muted-foreground"
+                    : isTokenCritical
+                    ? "border-destructive bg-destructive/10 text-destructive"
+                    : isTokenWarning
+                    ? "border-yellow-500/60 bg-yellow-500/10 text-yellow-600 dark:text-yellow-400"
+                    : "border-primary/60 bg-primary/10 text-primary"
+                }`}
+              >
+                {tokenUsage === null
+                  ? "Tokens"
+                  : tokenUsage.toLocaleString()}
+              </div>
+
+              {isTokenWarning && (
+                <div
+                  className={`flex items-center gap-1 text-[10px] ${
+                    isTokenCritical
+                      ? "text-destructive"
+                      : "text-yellow-600 dark:text-yellow-400"
+                  }`}
+                >
+                  <AlertTriangle className="h-3 w-3" />
+                </div>
+              )}
+
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onClick={handleManualCompress}
+                disabled={!sessionId || isCompressing}
+                className="h-8 w-8 flex-shrink-0"
+              >
+                {isCompressing ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <span className="text-[10px]">C</span>
+                )}
+              </Button>
+
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onClick={() => setIsToolsModalOpen(true)}
+                disabled={toolsError !== null}
+                className="h-8 w-8 flex-shrink-0"
+              >
+                <Wrench className="h-3 w-3" />
+              </Button>
+
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onClick={handleOpenFilesModal}
+                className="h-8 w-8 flex-shrink-0"
+              >
+                <FolderOpen className="h-3 w-3" />
+              </Button>
+
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onClick={handlePing}
+                disabled={pingLoading}
+                className="h-8 w-8 flex-shrink-0"
+              >
+                {pingLoading ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <span className="text-[10px]">ping</span>
+                )}
+              </Button>
+
+              {pingResponse && (
+                <span className="ml-1 flex-shrink-0 text-[10px] font-mono text-muted-foreground">
+                  {pingResponse}
+                </span>
+              )}
+            </div>
+
+            {/* Controls - desktop / tablet layout */}
+            <div className="hidden flex-wrap items-center gap-2 md:flex">
+              {messages.length === 0 && (
+                <>
+                  <button
+                    type="button"
+                    className="border border-border bg-card px-2 py-1 rounded-md text-xs transition-colors hover:bg-accent hover:text-accent-foreground"
+                    onClick={() =>
+                      setInput("Help me track the latest releases and funding rounds of several AI companies.")
+                    }
+                  >
+                    Describe monitoring scenario
+                  </button>
+                  <button
+                    type="button"
+                    className="border border-border bg-card px-2 py-1 rounded-md text-xs transition-colors hover:bg-accent hover:text-accent-foreground"
+                    onClick={() =>
+                      setInput("Check this requirements document for ambiguities and summarize the risks.")
+                    }
+                  >
+                    Provide context
+                  </button>
+                </>
+              )}
+
+              <div
+                className={`rounded-full border px-2 py-1 text-xs ${
+                  tokenUsage === null
+                    ? "border-border bg-muted text-muted-foreground"
+                    : isTokenCritical
+                    ? "border-destructive bg-destructive/10 text-destructive"
+                    : isTokenWarning
+                    ? "border-yellow-500/60 bg-yellow-500/10 text-yellow-600 dark:text-yellow-400"
+                    : "border-primary/60 bg-primary/10 text-primary"
+                }`}
+              >
+                {tokenUsage === null
+                  ? "Tokens: pending"
+                  : `Tokens: ${tokenUsage.toLocaleString()}`}
+              </div>
+              
+              {isTokenWarning && (
+                <div className={`flex items-center gap-1 text-xs ${
+                  isTokenCritical ? "text-destructive" : "text-yellow-600 dark:text-yellow-400"
+                }`}>
+                  <AlertTriangle className="h-3 w-3" />
+                </div>
+              )}
+
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleManualCompress}
+                disabled={!sessionId || isCompressing}
+                className="text-xs h-7"
+              >
+                {isCompressing ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <span>Compress</span>
+                )}
+              </Button>
+
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setIsToolsModalOpen(true)}
+                disabled={toolsError !== null}
+                className="text-xs h-7"
+              >
+                <Wrench className="h-3 w-3" />
+                <span>
+                  {toolsError ? "Tools Unavailable" : `Tools ${totalTools || 0}`}
+                </span>
+              </Button>
+
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleOpenFilesModal}
+                className="text-xs h-7"
+              >
+                <FolderOpen className="h-3 w-3" />
+                <span>Files</span>
+              </Button>
+
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handlePing}
+                disabled={pingLoading}
+                className="text-xs h-7"
+              >
+                {pingLoading ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <span>ping</span>
+                )}
+              </Button>
+              {pingResponse && (
+                <span className="text-xs font-mono text-muted-foreground">
+                  {pingResponse}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Messages area */}
+          <div className="flex min-h-0 flex-1 flex-col space-y-3 overflow-y-auto pr-1 sm:space-y-4 sm:pr-2">
+            {messages.length === 0 && (
+              <div className="py-12 text-center">
+                <div className="text-sm text-muted-foreground mb-2">System Ready</div>
+                <div className="text-xs text-muted-foreground">Type your question below or use a sample prompt to start.</div>
+              </div>
+            )}
+            {messages.map((message, index) => (
+              <div
+                key={index}
+                className={`flex items-start gap-3 ${
+                  message.role === "user" ? "justify-end" : "justify-start"
+                }`}
+              >
+                {message.role === "assistant" && (
+                  <div className="flex-shrink-0 w-20 h-20">
+                  <div className="relative w-full h-full rounded-full border-2 border-border overflow-hidden bg-white">
+                      <Image
+                        src="https://acontext.io/nav-logo-black.svg"
+                        alt="Acontext Worker"
+                        fill
+                        sizes="80px"
+                        className="object-contain p-3"
+                        priority
+                      />
+                    </div>
+                  </div>
+                )}
+                <div className="max-w-[80%] rounded-lg px-4 py-3 text-sm whitespace-pre-wrap leading-relaxed border-l-2 bg-card">
+                  <div className="mb-1.5 text-xs text-muted-foreground">
+                    {message.role === "user" ? "User" : "Acontext Worker"}
+                  </div>
+                  <div className="text-sm leading-relaxed">
+                    {renderLinks(message.content)}
+                  </div>
+                  {message.toolCalls && message.toolCalls.length > 0 && (
+                    <ToolCallsDisplay
+                      toolCalls={message.toolCalls}
+                      isFullPage={true}
+                    />
+                  )}
+                </div>
+              </div>
+            ))}
+            {isLoading && (
+              <div className="flex justify-start items-start gap-3 animate-fade-in">
+                <div className="flex-shrink-0 w-20 h-20">
+                  <div className="relative w-full h-full rounded-full border-2 border-border overflow-hidden bg-white">
+                    <Image
+                      src="https://acontext.io/nav-logo-black.svg"
+                      alt="Acontext Worker"
+                      fill
+                      sizes="80px"
+                      className="object-contain p-3"
+                      priority
+                    />
+                  </div>
+                </div>
+                <div className="max-w-[80%] rounded-lg px-4 py-3 text-sm whitespace-pre-wrap leading-relaxed border-l-2 bg-card">
+                  <div className="mb-1.5 text-xs text-muted-foreground">
+                    Acontext Worker
+                  </div>
+                  <div className="text-sm leading-relaxed flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                    <span className="text-muted-foreground">Processing...</span>
+                  </div>
+                </div>
+              </div>
+            )}
+            <div ref={messagesEndRef} />
+          </div>
+
+          {/* Error banner */}
+          {error && (
+            <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+              <div className="text-xs font-semibold mb-1">Error</div>
+              <div>{error}</div>
+            </div>
+          )}
+
+          {/* Attachments preview */}
+          {attachments.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-2">
+              {attachments.map((attachment, index) => (
+                <div
+                  key={index}
+                  className="flex items-center gap-2 rounded-lg border border-primary/50 bg-card px-3 py-1.5"
+                >
+                  <File className="h-3 w-3 text-primary" />
+                  <span className="text-xs text-foreground">
+                    {attachment.filename}
+                  </span>
+                  <button
+                    onClick={() => handleRemoveAttachment(index)}
+                    className="text-primary hover:text-primary/80"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Input row */}
+          <div className="mt-2 flex items-center gap-3 rounded-lg border bg-card px-4 py-3">
+            {messages.length === 0 && (
+              <div className="hidden flex-wrap gap-2 text-xs text-muted-foreground md:flex">
+                <button
+                  type="button"
+                  className="border border-border bg-card px-3 py-1.5 rounded-md transition-colors hover:bg-accent hover:text-accent-foreground"
+                  onClick={() =>
+                    setInput("Help me track the latest releases and funding rounds of several AI companies.")
+                  }
+                >
+                  Monitor AI companies
+                </button>
+                <button
+                  type="button"
+                  className="border border-border bg-card px-3 py-1.5 rounded-md transition-colors hover:bg-accent hover:text-accent-foreground"
+                  onClick={() =>
+                    setInput("Check this requirements document for ambiguities and summarize the risks.")
+                  }
+                >
+                  Analyze requirements context
+                </button>
+              </div>
+            )}
+
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              onChange={handleFileSelect}
+              className="hidden"
+              accept="*/*"
+            />
+            <Button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              size="icon"
+              variant="ghost"
+              disabled={isLoading}
+              className="h-8 w-8"
+            >
+              <Paperclip className="h-4 w-4" />
+            </Button>
+            <Input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyPress={handleKeyPress}
+              placeholder="Send a message or describe the scenario you want to monitor..."
+              disabled={isLoading}
+              className="flex-1"
+            />
+            <Button
+              onClick={handleSend}
+              disabled={(!input.trim() && attachments.length === 0) || isLoading}
+              size="icon"
+              className="h-10 w-10"
+            >
+              {isLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Send className="h-4 w-4" />
+              )}
+            </Button>
+          </div>
+        </div>
+
+        {/* Files modal */}
+        {isFilesModalOpen && (
+          <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/70 backdrop-blur-md">
+            <div className="relative max-h-[82vh] w-full max-w-4xl overflow-hidden rounded-2xl border bg-card shadow-lg">
+              <div className="flex flex-wrap items-center gap-3 border-b px-6 py-4 sm:justify-between">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <FolderOpen className="h-5 w-5 text-primary" />
+                    <span className="text-lg font-semibold">
+                      Acontext Disk Files
+                    </span>
+                  </div>
+                  <div className="text-sm text-muted-foreground">
+                    Files stored in Acontext Disk
+                  </div>
+                </div>
+
+                <div className="flex flex-1 items-center justify-end gap-2 sm:gap-3">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleLoadFiles}
+                    disabled={isFilesLoading}
+                    className="text-xs"
+                  >
+                    {isFilesLoading ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <span>Refresh</span>
+                    )}
+                  </Button>
+                  <div className="rounded-lg border bg-muted px-3 py-1.5 text-xs">
+                    {files.length} files
+                  </div>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    onClick={() => setIsFilesModalOpen(false)}
+                    className="h-8 w-8"
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+
+              <div className="max-h-[70vh] space-y-3 overflow-y-auto px-6 py-4">
+                {filesError && (
+                  <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-3.5 py-2.5">
+                    <div className="text-sm text-destructive">
+                      Failed to load files: {filesError}
+                    </div>
+                  </div>
+                )}
+
+                {isFilesLoading && files.length === 0 && (
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                    <span className="ml-3 text-sm text-muted-foreground">
+                      Loading files...
+                    </span>
+                  </div>
+                )}
+
+                {!isFilesLoading && !filesError && files.length === 0 && (
+                  <div className="py-12 text-center">
+                    <FolderOpen className="mx-auto h-12 w-12 text-muted-foreground/40 mb-4" />
+                    <div className="text-sm text-muted-foreground">
+                      No files found in Acontext Disk
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-2">
+                      Upload files using the attachment button to see them here
+                    </div>
+                  </div>
+                )}
+
+                {files.map((file, index) => (
+                  <div
+                    key={file.id || file.path || index}
+                    className="rounded-xl border bg-card p-4 space-y-2.5"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 flex-1 min-w-0">
+                        <File className="h-4 w-4 text-primary flex-shrink-0" />
+                        <span className="text-sm font-medium truncate">
+                          {file.filename || file.path || "Unknown file"}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3 text-sm">
+                      {file.mimeType && (
+                        <div>
+                          <span className="text-xs text-muted-foreground">
+                            Type
+                          </span>
+                          <div className="text-sm mt-1 font-mono">
+                            {file.mimeType}
+                          </div>
+                        </div>
+                      )}
+                      {file.size !== undefined && (
+                        <div>
+                          <span className="text-xs text-muted-foreground">
+                            Size
+                          </span>
+                          <div className="text-sm mt-1 font-mono">
+                            {file.size > 1024 * 1024
+                              ? `${(file.size / (1024 * 1024)).toFixed(2)} MB`
+                              : file.size > 1024
+                              ? `${(file.size / 1024).toFixed(2)} KB`
+                              : `${file.size} bytes`}
+                          </div>
+                        </div>
+                      )}
+                      {file.createdAt && (
+                        <div className="col-span-2">
+                          <span className="text-xs text-muted-foreground">
+                            Created
+                          </span>
+                          <div className="text-sm mt-1">
+                            {new Date(file.createdAt).toLocaleString()}
+                          </div>
+                        </div>
+                      )}
+                      {file.path && (
+                        <div className="col-span-2">
+                          <span className="text-xs text-muted-foreground">
+                            Path
+                          </span>
+                          <div className="text-xs font-mono mt-1 break-all">
+                            {file.path}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Tools modal */}
+        {isToolsModalOpen && (
+          <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/70 backdrop-blur-md">
+            <div className="relative max-h-[82vh] w-full max-w-4xl overflow-hidden rounded-2xl border bg-card shadow-lg">
+              <div className="flex flex-wrap items-center gap-3 border-b px-6 py-4 sm:justify-between">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <Wrench className="h-5 w-5 text-primary" />
+                    <span className="text-lg font-semibold">
+                      Available Tools
+                    </span>
+                  </div>
+                  <div className="text-sm text-muted-foreground">
+                    Tools that the model can call in this session
+                  </div>
+                </div>
+
+                <div className="flex flex-1 items-center justify-end gap-2 sm:gap-3">
+                  <div className="rounded-lg border bg-muted px-3 py-1.5 text-xs">
+                    Registered {totalTools || 0}
+                  </div>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    onClick={() => setIsToolsModalOpen(false)}
+                    className="h-8 w-8"
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+
+              <div className="max-h-[70vh] space-y-3 overflow-y-auto px-6 py-4">
+                {toolsError && (
+                  <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-3.5 py-2.5">
+                    <div className="text-sm text-destructive">
+                      Failed to load tools: {toolsError}
+                    </div>
+                  </div>
+                )}
+
+                {!toolsError && availableTools.length === 0 && (
+                  <div className="text-sm text-muted-foreground">
+                    No tools are registered.
+                  </div>
+                )}
+
+                {availableTools.map((tool) => (
+                  <div
+                    key={tool.name}
+                    className="rounded-xl border bg-card p-4 space-y-2.5"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+                        <span className="text-sm font-semibold">
+                          {tool.name}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="rounded-full border bg-muted px-2.5 py-0.5 text-xs">
+                          Registered
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="text-sm leading-relaxed">
+                      {tool.description || "No description"}
+                    </div>
+
+                    {tool.parameters.length > 0 && (
+                      <div className="mt-2 space-y-1.5">
+                        <div className="text-xs text-muted-foreground">
+                          Parameters ({tool.parameters.length})
+                        </div>
+                        {tool.parameters.map((param) => (
+                          <div
+                            key={`${tool.name}-${param.name}`}
+                            className="rounded-lg border bg-muted/50 px-3 py-2"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-sm font-medium">
+                                {param.name}
+                              </span>
+                              <span className="text-xs text-muted-foreground font-mono">
+                                {param.type}
+                                {param.required ? " • required" : ""}
+                              </span>
+                            </div>
+                            {param.description && (
+                              <div className="mt-1 text-sm leading-relaxed">
+                                {param.description}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}

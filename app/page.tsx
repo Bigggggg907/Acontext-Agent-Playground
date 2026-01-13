@@ -1,0 +1,223 @@
+import Image from "next/image";
+import Link from "next/link";
+import { Suspense } from "react";
+
+import { EnvVarWarning } from "@/components/env-var-warning";
+import { AuthButton } from "@/components/auth-button";
+import { ParallaxCharacter } from "@/components/parallax-character";
+import { Button } from "@/components/ui/button";
+import { ThemeSwitcher } from "@/components/theme-switcher";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { hasEnvVars } from "@/lib/utils";
+
+export default function Home() {
+  return (
+    <main className="relative min-h-screen bg-background text-foreground dark:bg-[#0b0b0f] dark:text-neutral-50">
+      {/* Background Character - Fixed Position with Parallax */}
+      <ParallaxCharacter />
+
+      {/* Content Layer */}
+      <div className="relative z-10">
+        {/* Top navigation */}
+        <nav className="relative border-b bg-card/50 backdrop-blur-sm dark:border-neutral-800 dark:bg-neutral-900/60">
+          <div className="mx-auto flex h-16 w-full max-w-[1600px] items-center justify-between px-4 sm:px-6 lg:px-12">
+            <div className="flex items-center gap-3">
+              <Link 
+                href="https://acontext.io/" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="flex items-center gap-2"
+              >
+                <Image
+                  src="https://acontext.io/nav-logo-black.svg"
+                  alt="Acontext"
+                  width={120}
+                  height={32}
+                  className="h-6 w-auto dark:invert"
+                  priority
+                />
+              </Link>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <Link 
+                href="https://acontext.io/" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="text-sm text-muted-foreground hover:text-foreground transition-colors duration-200 hidden sm:inline-block"
+              >
+                Visit Official Website
+              </Link>
+              <Suspense>
+                <AuthButton />
+              </Suspense>
+              <ThemeSwitcher />
+            </div>
+          </div>
+        </nav>
+
+        {/* Main Hero Section */}
+        <div className="relative min-h-[calc(100vh-4rem)] flex items-center">
+          <div className="mx-auto w-full max-w-[1600px] px-4 py-12 sm:px-6 sm:py-16 lg:px-12 lg:py-24">
+            <div className="max-w-3xl space-y-8 sm:space-y-10 lg:space-y-12">
+              {/* Tag */}
+              <div className="animate-slide-up" style={{ animationDelay: '0.2s' }}>
+                <Badge variant="secondary" className="text-sm sm:text-base">
+                  Acontext Playground
+                </Badge>
+              </div>
+
+              {/* Main headline */}
+              <div className="space-y-6 animate-slide-up" style={{ animationDelay: '0.3s' }}>
+                <h1 className="text-5xl font-bold leading-tight sm:text-6xl md:text-7xl lg:text-8xl">
+                  <span className="block text-primary">Acontext</span>
+                  <span className="block">Agent</span>
+                  <span className="block text-primary">Playground</span>
+                </h1>
+                
+                <p className="max-w-2xl text-lg leading-relaxed text-muted-foreground sm:text-xl lg:text-2xl">
+                  A monitoring and conversation playground designed for context-aware,
+                  autonomous agents. Start a controlled chat session and observe
+                  conversations, state, and tool calls in real time&mdash;all under
+                  your control.
+                </p>
+              </div>
+
+              {/* Highlighted Description */}
+              <div className="animate-slide-up" style={{ animationDelay: '0.35s' }}>
+                <Card className="bg-primary/10 border-primary/30 backdrop-blur-sm shadow-lg dark:bg-neutral-900/70 dark:border-neutral-800 dark:shadow-[0_30px_80px_-50px_rgba(0,0,0,0.9)]">
+                  <CardContent className="pt-6">
+                    <p className="text-base sm:text-lg font-medium text-foreground leading-relaxed mb-4">
+                      Acontext-aware autonomous chatbot playground for monitoring and controlling agent conversations.
+                    </p>
+                    <Link 
+                      href="https://acontext.io/" 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-2 text-base sm:text-lg font-semibold text-primary hover:text-primary/80 transition-all duration-200 group"
+                    >
+                      Visit Official Website
+                      <span className="transition-transform duration-200 group-hover:translate-x-1">→</span>
+                    </Link>
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* CTA section */}
+              <div className="space-y-6 animate-slide-up" style={{ animationDelay: '0.4s' }}>
+                {hasEnvVars ? (
+                  <Link href="/protected" className="inline-block group">
+                    <Button 
+                      size="lg" 
+                      className="text-lg px-8 py-7 h-auto font-semibold transition-all duration-300 group-hover:scale-105 group-hover:shadow-lg"
+                    >
+                      Enter Playground
+                      <span className="ml-2 transition-transform duration-300 group-hover:translate-x-1">→</span>
+                    </Button>
+                  </Link>
+                ) : (
+                  <div className="w-full max-w-md">
+                    <EnvVarWarning />
+                  </div>
+                )}
+
+                {/* Feature tags */}
+                <div className="flex flex-wrap gap-3 pt-2">
+                  {['Monitored Sessions', 'Context Snapshots', 'Tool Traces'].map((tag, index) => (
+                    <Badge 
+                      key={tag} 
+                      variant="outline" 
+                      className="text-sm transition-all duration-300 hover:bg-primary/10 hover:border-primary/50 dark:bg-neutral-900/60 dark:border-neutral-800"
+                      style={{ animationDelay: `${0.5 + index * 0.1}s` }}
+                    >
+                      {tag}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Preview Section */}
+        <div className="relative py-12 sm:py-16 lg:py-20">
+          <div className="mx-auto w-full max-w-[1600px] px-4 sm:px-6 lg:px-12">
+            <div className="max-w-2xl">
+              <Card className="backdrop-blur-sm bg-card/80 border-primary/20 shadow-xl animate-slide-up dark:bg-neutral-900/80 dark:border-neutral-800 dark:shadow-[0_30px_80px_-50px_rgba(0,0,0,0.9)]" style={{ animationDelay: '0.6s' }}>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-xl sm:text-2xl">Example Session</CardTitle>
+                    <Badge variant="secondary">Demo</Badge>
+                  </div>
+                  <CardDescription className="text-sm sm:text-base mt-2">
+                    See how agents handle complex tasks with real-time monitoring
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {[
+                    {
+                      role: 'User',
+                      content:
+                        'Create a monitoring dashboard for tracking AI company funding rounds and product launches.',
+                    },
+                    {
+                      role: 'Acontext Agent',
+                      content:
+                        'Setting up a Market Watch session. I\'ll monitor multiple sources and push important events to this conversation in real time.',
+                      tools: '3 tools used',
+                    },
+                  ].map((msg, i) => (
+                    <div
+                      key={i}
+                      className="space-y-2 border-l-2 border-primary/30 bg-muted/30 p-4 rounded-r-md transition-all duration-300 hover:bg-muted/50"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-semibold text-foreground">
+                          {msg.role}
+                        </span>
+                        {msg.tools && (
+                          <Badge variant="outline" className="text-xs">
+                            {msg.tools}
+                          </Badge>
+                        )}
+                      </div>
+                      <p className="text-sm leading-relaxed text-foreground">
+                        {msg.content}
+                      </p>
+                    </div>
+                  ))}
+
+                  {/* Tool call info */}
+                  <div className="mt-6 border-t pt-4">
+                    <div className="flex items-center justify-between text-xs text-muted-foreground mb-2">
+                      <span>Tool Execution</span>
+                      <Badge variant="outline" className="text-xs">Success</Badge>
+                    </div>
+                    <div className="space-y-1 text-xs font-mono text-muted-foreground">
+                      <div className="flex items-center justify-between">
+                        <span className="text-primary">market_intel.scan_feeds</span>
+                        <span>420ms</span>
+                      </div>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <footer className="relative border-t bg-card/50 backdrop-blur-sm py-6 sm:py-8">
+          <div className="mx-auto w-full max-w-[1600px] px-4 sm:px-6 lg:px-12">
+            <div className="text-center">
+              <p className="text-xs text-muted-foreground">
+                © 2026 Acontext Playground
+              </p>
+            </div>
+          </div>
+        </footer>
+      </div>
+    </main>
+  );
+}
