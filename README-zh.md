@@ -1,4 +1,28 @@
-# ACONTEXT Agent Playground - 启动模板
+<div align="center">
+  <h1 align="center">ACONTEXT Agent Playground</h1>
+  <p align="center">
+    <strong>用于构建上下文感知自主 AI 智能体的生产就绪启动模板</strong>
+  </p>
+  <p align="center">
+    由 <a href="https://acontext.io"><strong>Acontext</strong></a> 驱动
+  </p>
+  
+  <p align="center">
+    <a href="#功能特性"><strong>功能特性</strong></a> ·
+    <a href="#快速开始"><strong>快速开始</strong></a> ·
+    <a href="#部署"><strong>部署</strong></a> ·
+    <a href="#文档"><strong>文档</strong></a>
+  </p>
+  
+  <p align="center">
+    <img src="https://img.shields.io/badge/Next.js-15+-000000?style=for-the-badge&logo=next.js&logoColor=white" alt="Next.js" />
+    <img src="https://img.shields.io/badge/TypeScript-007ACC?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
+    <img src="https://img.shields.io/badge/Supabase-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white" alt="Supabase" />
+    <img src="https://img.shields.io/badge/Acontext-FF6B6B?style=for-the-badge" alt="Acontext" />
+  </p>
+</div>
+
+<br/>
 
 **ACONTEXT Agent Playground** 是一个生产就绪的启动模板，用于构建由 [Acontext](https://acontext.io) 驱动的上下文感知自主 AI 智能体。该模板提供了完整的认证、聊天界面、工具集成和会话管理功能，让您能够快速构建和自定义自己的 AI 智能体应用。
 
@@ -292,7 +316,7 @@ Vercel 部署将引导您创建 Supabase 账户和项目。
 
 安装 Supabase 集成后，所有相关的环境变量将自动分配给项目，因此部署将完全正常运行。
 
-**[使用 Vercel 部署](https://vercel.com/new/clone?repository-url=https://github.com/mbt1909432/Acontext-Agent-Playground)**
+[![使用 Vercel 部署](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fmbt1909432%2FAcontext-Agent-Playground&project-name=acontext-agent-playground&repository-name=acontext-agent-playground&demo-title=ACONTEXT%20Agent%20Playground&demo-description=用于构建上下文感知自主%20AI%20智能体的生产就绪启动模板，由%20Acontext%20驱动。&demo-url=https%3A%2F%2Fgithub.com%2Fmbt1909432%2FAcontext-Agent-Playground)
 
 上述操作还会将 Starter kit 克隆到您的 GitHub，您可以本地克隆并在本地开发。
 
