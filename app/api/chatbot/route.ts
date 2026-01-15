@@ -268,7 +268,10 @@ export async function POST(request: NextRequest) {
     // Prepare messages array
     const messages: Array<{
       role: "user" | "assistant" | "system";
-      content: string;
+      content: string | Array<
+        | { type: "text"; text: string }
+        | { type: "image_url"; image_url: { url: string } }
+      >;
     }> = [];
 
     // Add system prompt (use provided one or default Acontext promotion prompt)
@@ -390,7 +393,7 @@ Simple tasks (1-2 steps) don't require todo tool, but complex tasks MUST use it.
         
         messages.push({
           role: "user",
-          content: contentParts as any, // OpenAI accepts array for Vision API
+          content: contentParts,
         });
       } else {
         // No images, use regular text format
